@@ -108,20 +108,29 @@ internal fun ChatTranscript(
         }.collect { wasNearBottom = it }
     }
 
-    // Keyed on the *newest* seq, not the item count, so only growth at the tail moves the view.
-    // Counting items conflated two opposite events: a turn streaming in at the bottom, which should
-    // follow, and a page of history arriving at the top, which must not — asking for older messages
-    // and being thrown back to the newest one is the opposite of what the tap meant. The paging row
-    // appearing and disappearing changed the count too, which moved the view for no reason at all.
+    // Keyed on the transcript's own content, not on the newest seq.
+    //
+    // The seq only moves when a *durable* event lands, and a streaming answer is not one: its text
+    // grows inside a provisional node whose seq is minted once and then held (see `FoldState`
+    // .provisionalNodes). So keying on the seq tracked the tail only between turns, and during a
+    // turn the growing node simply pushed the newest lines below the fold — until the next durable
+    // event dragged the view back. Follow, drift, snap back, repeat: that is the shaking a reader
+    // sees while an answer is being written, and it is worst while a model reasons, because that
+    // is when the most content arrives with the fewest durable events.
+    //
+    // Keying on `nodes` re-runs this whenever the transcript's content actually changes, and
+    // value equality keeps it from re-running for a rebuild that changed nothing. The scroll is
+    // instant: an animation started per frame restarts before it finishes, which shakes the view
+    // on its own.
     val newestSeq = nodes.lastOrNull()?.seq
     var lastSession by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(newestSeq, sessionId) {
+    LaunchedEffect(nodes, newestSeq, sessionId) {
         if (itemCount == 0) return@LaunchedEffect
         val switched = sessionId != lastSession
         lastSession = sessionId
-        // Opening a session should land on its tail, not animate the whole list to get there.
-        if (switched) listState.scrollToItem(itemCount - 1)
-        else if (wasNearBottom) listState.animateScrollToItem(itemCount - 1)
+        // Opening a session should land on its tail, and following one already at its tail should
+        // stay there — neither wants to watch the list travel.
+        if (switched || wasNearBottom) listState.scrollToItem(itemCount - 1)
     }
 
     // Reaching the top pulls the next page. The guard matters: this effect sits above the `loading`

@@ -462,6 +462,36 @@ class SessionStore @Inject constructor(
         observeEvents()
         observePermissionSettlement()
         observeRebuildTicks()
+        observeConversationGaps()
+    }
+
+    /**
+     * Heal a transcript that noticed it had missed events.
+     *
+     * `gap` is latched by the fold the moment a sequence number is skipped, and nothing ever clears
+     * it: it describes one discontinuity, but the banner it raises used to stand for the rest of
+     * the session — long after whatever caused it had passed. A fresh baseline re-opens the session
+     * and re-folds the transcript from a complete snapshot, and because a fold is a new `EventFold`
+     * every time it is built, that snapshot comes back without a gap. So the flag's own reset is
+     * what takes the banner down; all this observer does is ask for the one thing that can produce
+     * it.
+     *
+     * At most one baseline per episode. The flag clearing is what re-arms this, so a stream that
+     * skips repeatedly cannot spin: worst case it asks once, the gap survives, and it stays quiet.
+     */
+    private fun observeConversationGaps() {
+        scope.launch {
+            var healing = false
+            currentConversation.collect { conversation ->
+                val gap = conversation?.gap == true
+                if (gap && !healing) {
+                    healing = true
+                    triggerBaseline()
+                } else if (!gap) {
+                    healing = false
+                }
+            }
+        }
     }
 
     /**
@@ -569,6 +599,12 @@ class SessionStore @Inject constructor(
     }
 
     private suspend fun baseline() {
+        // A fresh generation supersedes whatever the previous one failed at. Errors used to be set
+        // and only cleared by two specific recovery paths, so a failure during startup — a session
+        // read racing the sign-in, say — left a red banner over the transcript for the rest of the
+        // run while everything underneath it worked. Clearing on entry costs nothing and can only
+        // be wrong for as long as this attempt takes; anything that fails below sets its own error.
+        clearConnectionError()
         // Whether content search works is a fact about the harness we just reached, so a fresh
         // connection re-earns the answer rather than inheriting the previous host's.
         _contentSearchAvailable.value = true

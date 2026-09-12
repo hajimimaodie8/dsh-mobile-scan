@@ -71,6 +71,19 @@ data class PairUiState(
      * instant it opened, which looks exactly like the button not working.
      */
     val paired: HostConfig? = null,
+
+    /**
+     * An endpoint whose entry address answered without issuing a session, so it is waiting for a PIN.
+     *
+     * A `dsh-pocket` proxy serves two kinds of code. The LAN one hands the session to whoever asks;
+     * the public one is behind the 8-character PIN the panel shows, and its QR is a bare URL with no
+     * PIN in it — so the scan supplies the address and the user has to supply the rest. Null means
+     * no prompt is up.
+     */
+    val pinPrompt: HostConfig? = null,
+
+    /** The PIN just tried was refused. Stays until the next attempt or a dismissal. */
+    val pinRefused: Boolean = false,
 ) {
     val busy: Boolean get() = stage == PairStage.Claiming
 }
@@ -218,11 +231,49 @@ class PairViewModel @Inject constructor(
                     _state.update { it.copy(stage = PairStage.Paired, paired = config, failure = null) }
                     connectionManager.connect(config)
                 }
-                is SessionExchange.Refused -> fail(PairFailure.Rejected)
+                // The address answered but issued nothing: a public Pocket origin wants its PIN.
+                // Ask for it rather than reporting a failure — the address is right, and a scan is
+                // not the place to type eight characters.
+                is SessionExchange.Refused ->
+                    _state.update { it.copy(stage = PairStage.Idle, pinPrompt = config, failure = null) }
                 is SessionExchange.Unreachable -> fail(PairFailure.Unreachable(entry.authority))
             }
         }
     }
+
+    /**
+     * Try the PIN the user typed against the endpoint [PairUiState.pinPrompt] names.
+     *
+     * The same exchange the scan would have made, with the token the code could not carry. A
+     * refusal keeps the prompt up with an explanation, because typing it again is the only thing
+     * that can help; an unreachable endpoint drops the prompt and reports on the screen behind it,
+     * because retyping cannot.
+     */
+    fun submitEntryPin(pin: String) {
+        val config = _state.value.pinPrompt ?: return
+        val token = pin.trim()
+        if (token.isEmpty()) return
+        _state.update { it.copy(stage = PairStage.Claiming, pinRefused = false) }
+        viewModelScope.launch {
+            when (harnessSessions.pairEntry(config.id, config.baseUrl, token)) {
+                is SessionExchange.Granted -> {
+                    _state.update {
+                        it.copy(stage = PairStage.Paired, paired = config, pinPrompt = null, failure = null)
+                    }
+                    connectionManager.connect(config)
+                }
+                is SessionExchange.Refused ->
+                    _state.update { it.copy(stage = PairStage.Idle, pinRefused = true) }
+                is SessionExchange.Unreachable -> {
+                    _state.update { it.copy(stage = PairStage.Idle, pinPrompt = null) }
+                    fail(PairFailure.Unreachable(config.authority))
+                }
+            }
+        }
+    }
+
+    /** Dismiss the PIN prompt without connecting. The endpoint stays remembered for a retry. */
+    fun dismissEntryPin() = _state.update { it.copy(pinPrompt = null, pinRefused = false) }
 
     /** Claim a code the user typed, against an address they typed. */
     fun submit() {

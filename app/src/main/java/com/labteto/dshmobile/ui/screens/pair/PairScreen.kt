@@ -25,6 +25,9 @@ import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -37,6 +40,7 @@ import com.journeyapps.barcodescanner.ScanOptions
 import com.labteto.dshmobile.R
 import com.labteto.dshmobile.ui.components.DsButton
 import com.labteto.dshmobile.ui.components.DsButtonVariant
+import com.labteto.dshmobile.ui.components.DsDialog
 import com.labteto.dshmobile.ui.components.DsIconButton
 import com.labteto.dshmobile.ui.components.SectionHeader
 import com.labteto.dshmobile.ui.components.StateDot
@@ -195,6 +199,65 @@ fun PairScreen(
 
             Spacer(Modifier.height(DsSpacing.xlarge))
         }
+
+        state.pinPrompt?.let { endpoint ->
+            EntryPinDialog(
+                endpoint = endpoint.authority,
+                working = state.busy,
+                refused = state.pinRefused,
+                onDismiss = viewModel::dismissEntryPin,
+                onSubmit = viewModel::submitEntryPin,
+            )
+        }
+    }
+}
+
+/**
+ * The PIN prompt for an entry address that asked for one.
+ *
+ * Only the *public* `dsh-pocket` origin needs this: its QR is a bare URL, its access sits behind
+ * the eight characters the panel shows, and no part of the code carries them. The LAN origin issues
+ * a session to whoever asks and never reaches this dialog.
+ *
+ * It reuses the sign-in strings deliberately — the field takes a credential for the endpoint that
+ * was just scanned, which is what that prompt already says — so this adds no translatable copy and
+ * no locale can fall behind.
+ */
+@Composable
+private fun EntryPinDialog(
+    endpoint: String,
+    working: Boolean,
+    refused: Boolean,
+    onDismiss: () -> Unit,
+    onSubmit: (String) -> Unit,
+) {
+    val colors = DsTheme.colors
+    var pin by remember { mutableStateOf("") }
+    DsDialog(title = stringResource(R.string.connect_sign_in_title), onDismiss = onDismiss) {
+        Text(endpoint, style = DsType.small13, color = colors.labelTertiary)
+        TextField(
+            value = pin,
+            onValueChange = { pin = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            enabled = !working,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            colors = pairFieldColors(),
+        )
+        if (refused) {
+            Text(
+                stringResource(R.string.pair_fail_rejected),
+                style = DsType.small13,
+                color = colors.warnLabel,
+            )
+        }
+        DsButton(
+            text = stringResource(if (working) R.string.pair_working else R.string.connect_sign_in),
+            onClick = { onSubmit(pin) },
+            enabled = !working && pin.isNotBlank(),
+            variant = DsButtonVariant.Primary,
+            modifier = Modifier.fillMaxWidth(),
+        )
     }
 }
 

@@ -419,6 +419,15 @@ class SessionStore @Inject constructor(
     // Open-session fold state.
     private var currentId: String? = null
     private val currentEvents = ArrayList<SessionEventEnvelope>()
+
+    /**
+     * Sessions whose transcript reported a gap and have been re-opened in response.
+     *
+     * Guarded by [lock], with the rest of the open-session state. Per session rather than global
+     * because a gap is a property of one journal, and never cleared because the reason for the
+     * silence — a skip this client cannot recover — does not go away by itself.
+     */
+    private val gapHealed = HashSet<String>()
     private var currentHasMore = false
     private var currentBlank = true
     private val currentProjections = HashMap<String, ProjectionValue>()
@@ -466,29 +475,27 @@ class SessionStore @Inject constructor(
     }
 
     /**
-     * Heal a transcript that noticed it had missed events.
+     * Heal a transcript that noticed it had missed events, and stop saying so afterwards.
      *
      * `gap` is latched by the fold the moment a sequence number is skipped, and nothing ever clears
      * it: it describes one discontinuity, but the banner it raises used to stand for the rest of
-     * the session — long after whatever caused it had passed. A fresh baseline re-opens the session
-     * and re-folds the transcript from a complete snapshot, and because a fold is a new `EventFold`
-     * every time it is built, that snapshot comes back without a gap. So the flag's own reset is
-     * what takes the banner down; all this observer does is ask for the one thing that can produce
-     * it.
+     * the session — long after whatever caused it had passed, over a connection that was working.
+     * A fresh baseline re-opens the session and re-folds the transcript from a complete snapshot,
+     * and because a fold is a new `EventFold` every time it is built, that snapshot comes back
+     * without a gap.
      *
-     * At most one baseline per episode. The flag clearing is what re-arms this, so a stream that
-     * skips repeatedly cannot spin: worst case it asks once, the gap survives, and it stays quiet.
+     * The session is recorded in [gapHealed] on the way, which is what stops the banner coming
+     * back: a skip that survives a re-open is one this client cannot do anything about, and repeating
+     * the warning every time it happens would leave it on screen permanently. One attempt, one
+     * mention, then quiet.
      */
     private fun observeConversationGaps() {
         scope.launch {
-            var healing = false
             currentConversation.collect { conversation ->
-                val gap = conversation?.gap == true
-                if (gap && !healing) {
-                    healing = true
-                    triggerBaseline()
-                } else if (!gap) {
-                    healing = false
+                val sid = conversation?.sessionId ?: return@collect
+                if (conversation.gap) {
+                    val first = synchronized(lock) { gapHealed.add(sid) }
+                    if (first) triggerBaseline()
                 }
             }
         }
@@ -1113,6 +1120,16 @@ class SessionStore @Inject constructor(
             hasMore = currentHasMore,
             queue = currentQueue,
             projections = currentProjections.mapValues { it.value.value },
+            // A gap is worth saying once, and only while it is still outstanding.
+            //
+            // The flag describes a sequence number that was never delivered, which the app cannot
+            // recover by waiting — the event it names is behind it. What it *can* do is re-open the
+            // session, and that has been asked for by the time a session lands in [gapHealed]. A
+            // banner that keeps standing after that is reporting a condition the user cannot act
+            // on, in words that are simply wrong: it says the connection is reconnecting, and the
+            // connection is fine — which is exactly how this looked on a handset, a permanent
+            // 'reconnecting' over a transcript that was streaming normally.
+            gap = snapshot.gap && sid !in gapHealed,
         )
         _currentConversation.value = merged
     }

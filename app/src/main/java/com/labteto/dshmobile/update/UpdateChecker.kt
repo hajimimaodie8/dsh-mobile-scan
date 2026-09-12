@@ -112,7 +112,14 @@ class UpdateChecker @Inject constructor(
     }
 
     private companion object {
-        const val REPO = "sorsama/deepseek-harness-mobile"
+        /**
+         * This fork's own releases, not upstream's.
+         *
+         * The dialog is a link out to an APK, so pointing it at the parent project would offer a
+         * build signed with a different key — one this install cannot replace, and which cannot
+         * replace this one. Whatever is offered here has to be installable over what is running.
+         */
+        const val REPO = "hajimimaodie8/dsh-mobile-scan"
         const val LATEST_RELEASE_API = "https://api.github.com/repos/$REPO/releases/latest"
         const val RELEASES_URL = "https://github.com/$REPO/releases/latest"
     }

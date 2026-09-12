@@ -11,6 +11,7 @@ import com.labteto.dshmobile.update.UpdateChecker
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -29,6 +30,19 @@ class AppViewModel @Inject constructor(
     )
 
     val connectionState: StateFlow<ConnectionUiState> = connectionManager.state
+
+    /**
+     * Whether this device has ever enrolled an endpoint. `null` until the store has been read.
+     *
+     * The scan-first entry keys off this rather than off "not connected": nothing connects at
+     * launch, so a device that paired months ago is also momentarily unconnected — and opening the
+     * camera at someone who already has a working endpoint would turn every launch into a scan they
+     * have to cancel. `null` deliberately reads as "unknown", which keeps the original connect
+     * screen until the answer is actually known.
+     */
+    val hasRememberedHost: StateFlow<Boolean?> = hostsStore.hosts
+        .map { it.isNotEmpty() }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     /** A newer release to offer, or null. See [UpdateChecker]. */
     val availableUpdate: StateFlow<AvailableUpdate?> = updateChecker.available

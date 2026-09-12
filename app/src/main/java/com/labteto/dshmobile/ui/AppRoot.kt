@@ -46,6 +46,8 @@ fun AppRoot(viewModel: AppViewModel = hiltViewModel()) {
     val update by viewModel.availableUpdate.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { viewModel.checkForUpdate(BuildConfig.VERSION_NAME) }
 
+    val hasRememberedHost by viewModel.hasRememberedHost.collectAsStateWithLifecycle()
+
     DshTheme(preference = themePreference) {
         var showSettings by rememberSaveable { mutableStateOf(false) }
         // Pairing is a detour off the connect screen rather than a mode of it: it owns the camera,
@@ -55,24 +57,29 @@ fun AppRoot(viewModel: AppViewModel = hiltViewModel()) {
         // back to an empty address field would lose the one thing the user had already supplied.
         var showPair by rememberSaveable { mutableStateOf(false) }
         var pairUrl by rememberSaveable { mutableStateOf<String?>(null) }
-        // Scan-first entry (this build's whole reason to exist): with nothing remembered, the app
-        // opens straight on the camera instead of a connect menu that hides it behind a tap.
-        // Cancelling a scan records that and falls back to the original connect screen, so the
-        // typed-address path and everything behind it stays reachable.
+        // Scan-first entry (this build's whole reason to exist). Cancelling a scan records that and
+        // falls back to the original connect screen, so the typed-address path and everything behind
+        // it stays reachable.
         var pairCancelled by rememberSaveable { mutableStateOf(false) }
         val showMain = connection.phase == ConnectionPhase.CONNECTED ||
             (connection.phase == ConnectionPhase.RECONNECTING && connection.hasConnected)
+        // A device that has never enrolled anything: opening the camera is the only useful thing
+        // this app can do, so it does it without being asked. `false` rather than "not connected",
+        // because a paired device is unconnected at every launch too — and there the remembered
+        // endpoint, not the camera, is what the user came for. Unknown reads as not-first-run, so
+        // the camera can never open before the store has answered.
+        val scanFirst = hasRememberedHost == false
         when {
             showSettings -> SettingsScreen(onClose = { showSettings = false })
             // A remembered connection always wins: the scanner is for the unconnected case only.
             showMain -> MainScreen(onOpenSettings = { showSettings = true })
-            showPair || !pairCancelled -> PairScreen(
+            showPair || (!pairCancelled && hasRememberedHost != true) -> PairScreen(
                 onClose = {
                     showPair = false
                     pairCancelled = true
                 },
                 prefillUrl = pairUrl,
-                autoScan = true,
+                autoScan = scanFirst,
             )
             else -> ConnectScreen(
                 onOpenSettings = { showSettings = true },

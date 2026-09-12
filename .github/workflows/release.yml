@@ -20,12 +20,23 @@ jobs:
       - uses: android-actions/setup-android@v3
       - uses: gradle/actions/setup-gradle@v4
 
+      # Signing material comes from repository secrets when they are set, and from repository
+      # variables otherwise, so a personal fork can keep a stable identity without a private key in
+      # git. Both are optional; a build with neither still succeeds, but it is signed with whatever
+      # throwaway debug key that runner generated — which cannot be installed over an existing
+      # install of the same app. That is a warning, never a silence: see "Verify signing" below.
       - name: Restore signing keystore (optional)
         env:
-          KEYSTORE_B64: ${{ secrets.RELEASE_KEYSTORE }}
+          SECRET_KEYSTORE_B64: ${{ secrets.RELEASE_KEYSTORE }}
+          VAR_KEYSTORE_B64: ${{ vars.RELEASE_KEYSTORE }}
         run: |
+          KEYSTORE_B64="${SECRET_KEYSTORE_B64:-$VAR_KEYSTORE_B64}"
           if [ -n "$KEYSTORE_B64" ]; then
             echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            echo "Signing keystore restored ($(stat -c%s "$RUNNER_TEMP/release.keystore") bytes)."
+            echo "DSH_SIGNED_WITH_STABLE_KEY=yes" >> "$GITHUB_ENV"
+          else
+            echo "::warning::No signing keystore found (RELEASE_KEYSTORE secret or variable). The APK will be signed with a throwaway debug key: it installs on a clean device, but not over an existing install."
           fi
 
       # The tag is the single source of the shipped version; see app/build.gradle.kts.
@@ -38,10 +49,23 @@ jobs:
       - name: Build release APK
         env:
           DSH_KEYSTORE: ${{ runner.temp }}/release.keystore
-          DSH_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
-          DSH_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
-          DSH_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+          DSH_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD || vars.RELEASE_KEYSTORE_PASSWORD }}
+          DSH_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS || vars.RELEASE_KEY_ALIAS }}
+          DSH_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD || vars.RELEASE_KEY_PASSWORD }}
         run: ./gradlew :app:assembleRelease --stacktrace
+
+      # What the artifact actually carries, read back from the APK rather than assumed from the
+      # inputs: stale or mismatched signing material is only visible here, and it decides whether
+      # an install can be updated in place.
+      - name: Verify signing
+        run: |
+          APKSIGNER=$(ls "$ANDROID_SDK_ROOT"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1)
+          APK=$(ls app/build/outputs/apk/release/*.apk | head -1)
+          echo "APK: $APK"
+          "$APKSIGNER" verify --print-certs "$APK"
+          if [ "$DSH_SIGNED_WITH_STABLE_KEY" != "yes" ]; then
+            echo "::warning::$APK is signed with a throwaway key — users must uninstall before installing the next release."
+          fi
 
       - name: Checksums
         run: |

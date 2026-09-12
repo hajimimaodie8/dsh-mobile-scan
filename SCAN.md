@@ -16,14 +16,15 @@
 | 应用内「检查更新」指向的仓库 | 上游 `sorsama/deepseek-harness-mobile` | 本仓库（见下） |
 | release 签名 | 无密钥时产出**未签名 APK**（装不上） | 无密钥时降级用调试密钥签名，保证能装（见下） |
 
-改动落在四个文件：
+改动落在五个文件：
 
 - `app/src/main/java/com/labteto/dshmobile/ui/AppRoot.kt` —— 首次启动直接进扫码页
 - `app/src/main/java/com/labteto/dshmobile/ui/AppViewModel.kt` —— 暴露"是否配对过任何主机"
 - `app/src/main/java/com/labteto/dshmobile/ui/screens/pair/PairScreen.kt` —— 新增 `autoScan` 参数（进入即开相机）
 - `app/build.gradle.kts` —— 无签名密钥时用调试密钥签 release
+- `app/src/main/java/com/labteto/dshmobile/update/UpdateChecker.kt` —— 「检查更新」指向本仓库
 
-另加 `app/.../update/UpdateChecker.kt` 一处常量修正。其余文件与上游一致。
+其余文件与上游一致。
 
 ### 为什么"是否配对过"要比"当前是否已连接"更合适
 

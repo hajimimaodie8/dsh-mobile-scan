@@ -24,10 +24,12 @@ import javax.inject.Singleton
  *
  * Deliberately *not* encrypted at rest, unlike [RelayCredentialStore]. That store guards a relay
  * device token, which is a credential for reaching a machine across a network. This one guards a
- * loopback harness session — the app only ever holds one for a host it reaches directly, over
- * `adb reverse` or on the device itself — and on that path anything able to read this app's
- * DataStore is already running as the user whose harness it is. Encrypting it would suggest a
- * boundary that is not there.
+ * session that the far end issued to this handset for its own use — obtained either from a harness
+ * reached directly, over `adb reverse` or on the device itself, or from a `dsh-pocket` proxy that
+ * hands the same cookie to any browser that reaches its origin. On both paths anything able to read
+ * this app's DataStore is already running as the user whose harness it is, and neither cookie is a
+ * credential for a machine belonging to somebody else. Encrypting it would suggest a boundary that
+ * is not there.
  *
  * Behind a relay this store stays empty: the relay holds the harness session and injects it
  * upstream, and the phone never carries the host's cookie across the network.
@@ -52,6 +54,27 @@ class HarnessSessionStore @Inject constructor(
         val token = HarnessSession.tokenFrom(tokenInput)
             ?: return SessionExchange.Refused(0)
         val outcome = HarnessSession.exchange(baseUrl, token, okHttpClient)
+        if (outcome is SessionExchange.Granted) {
+            write(sessions() + (hostId to outcome.cookie))
+        }
+        return outcome
+    }
+
+    /**
+     * Take a session from [baseUrl] on the strength of the address alone.
+     *
+     * This is the entry a scanned code names: a `dsh-pocket` origin, or a harness reached at its
+     * own address. A token is used when the code carried one and skipped when it did not — Pocket
+     * issues the session to a plain request, so a tokenless code is a complete instruction rather
+     * than a missing field.
+     *
+     * The cookie is stored against [hostId] exactly as [pair] stores one, because everything
+     * downstream — the unary carrier, the mux upgrade, the log download — only ever asks this store
+     * for a cookie by host id and does not care which exchange produced it.
+     */
+    suspend fun pairEntry(hostId: String, baseUrl: String, tokenInput: String?): SessionExchange {
+        val token = tokenInput?.let { HarnessSession.tokenFrom(it) }
+        val outcome = HarnessSession.exchangeEntry(baseUrl, token, okHttpClient)
         if (outcome is SessionExchange.Granted) {
             write(sessions() + (hostId to outcome.cookie))
         }

@@ -5,17 +5,22 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.labteto.dshmobile.connection.ConnectionManager
 import com.labteto.dshmobile.connection.HarnessClientFactory
+import com.labteto.dshmobile.connection.HarnessSessionStore
 import com.labteto.dshmobile.connection.HostConfig
 import com.labteto.dshmobile.connection.HostsStore
 import com.labteto.dshmobile.connection.RelayCredentialStore
 import com.labteto.dshmobile.connection.RelayIdentity
 import com.labteto.dshmobile.core.wire.ObservedKey
 import com.labteto.dshmobile.core.wire.PairingPayloadResult
+import com.labteto.dshmobile.core.wire.PocketEntry
+import com.labteto.dshmobile.core.wire.PocketEntryParser
+import com.labteto.dshmobile.core.wire.PocketEntryResult
 import com.labteto.dshmobile.core.wire.RelayOrigin
 import com.labteto.dshmobile.core.wire.RelayPairOutcome
 import com.labteto.dshmobile.core.wire.RelayPairing
 import com.labteto.dshmobile.core.wire.RelayPairingPayload
 import com.labteto.dshmobile.core.wire.RelayTls
+import com.labteto.dshmobile.core.wire.SessionExchange
 import com.labteto.dshmobile.core.wire.TransportFailure
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -127,6 +132,7 @@ class PairViewModel @Inject constructor(
     private val clientFactory: HarnessClientFactory,
     private val connectionManager: ConnectionManager,
     private val okHttpClient: OkHttpClient,
+    private val harnessSessions: HarnessSessionStore,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(PairUiState())
@@ -155,8 +161,7 @@ class PairViewModel @Inject constructor(
      */
     fun onScanned(text: String) {
         when (val parsed = RelayPairing.parsePayload(text)) {
-            is PairingPayloadResult.NotAPairingCode ->
-                _state.update { it.copy(failure = PairFailure.NotAPairingCode) }
+            is PairingPayloadResult.NotAPairingCode -> onScannedEntry(text)
             is PairingPayloadResult.TooNew ->
                 _state.update { it.copy(failure = PairFailure.TooNew(parsed.version)) }
             is PairingPayloadResult.Valid -> {
@@ -169,6 +174,52 @@ class PairViewModel @Inject constructor(
                     it.copy(scanned = payload, url = payload.url, code = payload.code, failure = null)
                 }
                 claim(payload.url, payload.code, payload.fingerprint)
+            }
+        }
+    }
+
+    /**
+     * The code was not a relay payload; try it as an entry address.
+     *
+     * Two kinds of code reach this app and only one of them is a `dsh-relay` invitation. The other
+     * is the origin a `dsh-pocket` proxy publishes — the code its 远程连接 panel shows — which
+     * carries no pairing code at all and needs none: that proxy answers a plain request with the
+     * harness session, and everything after it is the direct-connection path this app already had
+     * for a pasted startup URL. Codes that are neither keep the old answer.
+     */
+    private fun onScannedEntry(text: String) {
+        when (val parsed = PocketEntryParser.parse(text)) {
+            is PocketEntryResult.Valid -> enter(parsed.entry)
+            PocketEntryResult.NotAnEntry ->
+                _state.update { it.copy(failure = PairFailure.NotAPairingCode) }
+        }
+    }
+
+    /**
+     * Connect to an address a QR named, by taking a session from it.
+     *
+     * Ordered the way [enrol] is, and for the same reason: remember the endpoint first so it has an
+     * id, store the credential against that id, and only then connect. A failure leaves a
+     * remembered host with no session behind, which is an endpoint the user can retry from the
+     * connect screen rather than an address that silently vanished.
+     */
+    private fun enter(entry: PocketEntry) {
+        _state.update { it.copy(stage = PairStage.Claiming, url = entry.baseUrl, failure = null) }
+        viewModelScope.launch {
+            val config = hostsStore.rememberHost(
+                name = entry.host,
+                host = entry.host,
+                port = entry.port,
+                isLoopback = entry.isLoopback,
+                useTls = entry.useTls,
+            )
+            when (val outcome = harnessSessions.pairEntry(config.id, entry.baseUrl, entry.token)) {
+                is SessionExchange.Granted -> {
+                    _state.update { it.copy(stage = PairStage.Paired, paired = config, failure = null) }
+                    connectionManager.connect(config)
+                }
+                is SessionExchange.Refused -> fail(PairFailure.Rejected)
+                is SessionExchange.Unreachable -> fail(PairFailure.Unreachable(entry.authority))
             }
         }
     }

@@ -38,6 +38,11 @@ sealed class SessionExchange {
  * injects it upstream, and a phone that sent the host's cookie across the network would be
  * carrying a credential it has no business holding.
  *
+ * A `dsh-pocket` proxy is the third case and behaves like the first: it *issues* this cookie to
+ * whoever reaches its origin — that is the entirety of how a phone browser gets in — so an app
+ * that reaches it holds a session of its own rather than the host's borrowed one. See
+ * [exchangeEntry] for the tokenless shape that flow uses.
+ *
  * Nothing here retries. A refusal means the token is not current, and asking again with the same
  * one produces the same answer.
  */
@@ -58,6 +63,30 @@ object HarnessSession {
         token: String,
         client: OkHttpClient,
         timeoutMs: Long = 10_000,
+    ): SessionExchange = request(baseUrl, token, client, timeoutMs)
+
+    /**
+     * Ask [baseUrl] for a session without a token.
+     *
+     * A `dsh-pocket` proxy publishes its LAN origin as a QR and issues this same cookie to a plain
+     * `GET /` — there is no launch token in that flow, and no token to present. The exchange is
+     * otherwise identical, and so is what comes back: the same signed cookie, bound to the same
+     * authority, which is why one implementation covers both.
+     *
+     * A [token] is still honoured when the scanned code carried one.
+     */
+    suspend fun exchangeEntry(
+        baseUrl: String,
+        token: String?,
+        client: OkHttpClient,
+        timeoutMs: Long = 10_000,
+    ): SessionExchange = request(baseUrl, token, client, timeoutMs)
+
+    private suspend fun request(
+        baseUrl: String,
+        token: String?,
+        client: OkHttpClient,
+        timeoutMs: Long,
     ): SessionExchange = withContext(Dispatchers.IO) {
         val exchanger = client.newBuilder()
             .followRedirects(false)
@@ -65,7 +94,8 @@ object HarnessSession {
             .connectTimeout(timeoutMs, TimeUnit.MILLISECONDS)
             .readTimeout(timeoutMs, TimeUnit.MILLISECONDS)
             .build()
-        val url = baseUrl.trimEnd('/') + "/?token=" + java.net.URLEncoder.encode(token, "UTF-8")
+        val suffix = if (token == null) "/" else "/?token=" + java.net.URLEncoder.encode(token, "UTF-8")
+        val url = baseUrl.trimEnd('/') + suffix
         val request = Request.Builder().url(url).get().build()
         try {
             exchanger.newCall(request).execute().use { response ->
